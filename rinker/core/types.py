@@ -40,6 +40,7 @@ class Datum:
 
     model_input: ModelInput
     loss_fn_inputs: TensorDict
+    policy_version: int | None = None
 
 
 @dataclass

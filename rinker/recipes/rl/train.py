@@ -97,6 +97,7 @@ def _prepare_datum(
             "advantages": torch.zeros_like(targets, dtype=torch.float32),
             "clip_epsilon": 0.2,
         },
+        policy_version=getattr(sample, "weights_version", None),
     )
     mask = torch.zeros_like(targets, dtype=torch.bool)
     mask[completion_start:] = True
@@ -174,6 +175,7 @@ class RLTrainer:
                         advantage_mask=mask,
                         kl_value=kl_val,
                         metrics=transition.metrics,
+                        policy_version=getattr(sample, "weights_version", None),
                     )
             elapsed = time.time() - start
 
@@ -209,9 +211,18 @@ class RLTrainer:
                 print(f"    metrics: {extras}")
 
     def _run_updates(self, dataset: RLDataset) -> Mapping[str, float]:
+        schedule = self._training.runtime_config.stream_minibatch
+        if schedule is not None:
+            responses = self._training.stream_minibatch_train(
+                dataset,
+                loss_fn=self._config.loss_name,
+                optimiser=self._optim,
+                config=schedule,
+            )
+            return responses[-1].metrics if responses else {}
         batch = dataset.build_batch()
         aggregated: Mapping[str, float] = {}
-        for substep in range(self._config.num_substeps):
+        for _ in range(self._config.num_substeps):
             fb = self._training.forward_backward(batch, loss_fn=self._config.loss_name).result()
             self._training.optim_step(self._optim).result()
             aggregated = fb.metrics

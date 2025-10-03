@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional,
 import torch
 
 from ..core.types import Datum
+from ..ray_runtime.config import StreamMinibatchConfig
 
 
 @dataclass
@@ -21,6 +22,7 @@ class RLSample:
     advantage_mask: torch.Tensor | None = None
     kl_value: float | None = None
     metrics: Mapping[str, float] = field(default_factory=dict)
+    policy_version: int | None = None
 
 
 class RLDataset:
@@ -28,6 +30,7 @@ class RLDataset:
 
     def __init__(self) -> None:
         self._samples: List[RLSample] = []
+        self._discarded_off_policy: int = 0
 
     # ------------------------------------------------------------------
     # Mutation helpers
@@ -42,6 +45,7 @@ class RLDataset:
         advantage_mask: torch.Tensor | None = None,
         kl_value: float | None = None,
         metrics: Mapping[str, float] | None = None,
+        policy_version: int | None = None,
     ) -> None:
         if advantage_mask is not None and not isinstance(advantage_mask, torch.Tensor):
             raise TypeError("advantage_mask must be a torch.Tensor or None")
@@ -57,6 +61,7 @@ class RLDataset:
             advantage_mask=advantage_mask,
             kl_value=kl_value,
             metrics=dict(metrics or {}),
+            policy_version=policy_version,
         )
         self._samples.append(sample)
 
@@ -66,6 +71,7 @@ class RLDataset:
 
     def clear(self) -> None:
         self._samples.clear()
+        self._discarded_off_policy = 0
 
     # ------------------------------------------------------------------
     # Introspection
@@ -118,6 +124,10 @@ class RLDataset:
             return 0.0
         return float(torch.tensor(kl_values, dtype=torch.float32).mean().item())
 
+    @property
+    def discarded_off_policy(self) -> int:
+        return self._discarded_off_policy
+
     # ------------------------------------------------------------------
     # Advantage utilities
     # ------------------------------------------------------------------
@@ -164,6 +174,29 @@ class RLDataset:
     def build_batch(self) -> List[Datum]:
         return [sample.datum for sample in self._samples]
 
+    def iter_minibatches(self, config: StreamMinibatchConfig) -> Iterable[List[Datum]]:
+        from math import ceil
+
+        groups: Dict[int, List[Datum]] = {}
+        for sample in self._samples:
+            groups.setdefault(sample.group_id, []).append(sample.datum)
+        group_ids = list(groups.keys())
+        if not group_ids:
+            return
+        for start in range(0, len(group_ids), config.groups_per_batch):
+            chunk_ids = group_ids[start : start + config.groups_per_batch]
+            chunk: List[Datum] = []
+            for gid in chunk_ids:
+                chunk.extend(groups[gid])
+            if not chunk:
+                continue
+            if config.num_minibatches <= 1:
+                yield list(chunk)
+                continue
+            size = max(1, ceil(len(chunk) / config.num_minibatches))
+            for idx in range(0, len(chunk), size):
+                yield chunk[idx : idx + size]
+
     def group_reward_summary(self) -> Dict[int, float]:
         summary: Dict[int, float] = {}
         for sample in self._samples:
@@ -179,7 +212,28 @@ class RLDataset:
         summary: Dict[str, float] = {}
         for key, values in aggregate.items():
             summary[key] = float(torch.tensor(values, dtype=torch.float32).mean().item())
+        summary["discarded_off_policy"] = float(self._discarded_off_policy)
         return summary
+
+    # ------------------------------------------------------------------
+    # Off-policy helpers
+    # ------------------------------------------------------------------
+    def enforce_policy_window(self, current_version: int, max_steps_off_policy: int) -> None:
+        if max_steps_off_policy < 0:
+            return
+        allowed_min = max(0, current_version - max_steps_off_policy)
+        filtered: List[RLSample] = []
+        discarded = 0
+        for sample in self._samples:
+            if sample.policy_version is None:
+                filtered.append(sample)
+                continue
+            if sample.policy_version < allowed_min:
+                discarded += 1
+                continue
+            filtered.append(sample)
+        self._samples = filtered
+        self._discarded_off_policy += discarded
 
 
 __all__ = ["RLDataset", "RLSample"]
