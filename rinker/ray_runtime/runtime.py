@@ -113,6 +113,10 @@ class RayRuntime:
     def config(self) -> RayRuntimeConfig:
         return self._config
 
+    @property
+    def model_spec(self) -> ModelSpec:
+        return self._model_spec
+
     # ------------------------------------------------------------------
     # Lifecycle helpers
     # ------------------------------------------------------------------
@@ -195,6 +199,7 @@ class RayRuntime:
         return SamplerActor.options(**options).remote(
             self._tokenizer,
             **self._config.sampler_kwargs(),
+            hidden_size=self._model_spec.hidden_size,
         )
 
     # ------------------------------------------------------------------

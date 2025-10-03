@@ -752,12 +752,14 @@ class SamplerActor:
         lora_alpha: float = 16.0,
         lora_dropout: float = 0.0,
         backend: str = "torch",
+        hidden_size: int | None = None,
     ):
         self._tokenizer = tokenizer
         self._device = _resolve_device()
         lora_config = LoRAConfig(rank=lora_rank, alpha=lora_alpha, dropout=lora_dropout)
         self._model = engine.SimpleLanguageModel(
             tokenizer.vocab_size,
+            hidden_size=hidden_size or 128,
             lora_config=lora_config if lora_rank > 0 else None,
         )
         self._model.to(self._device)

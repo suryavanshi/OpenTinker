@@ -70,7 +70,12 @@ class ModelRegistry:
             self._specs.update(overrides)
 
     def list_models(self) -> List[str]:
-        return sorted(self._specs)
+        def _sort_key(alias: str) -> tuple[int, str]:
+            spec = self._specs[alias]
+            priority = 0 if spec.architecture == "simple" else 1
+            return (priority, alias)
+
+        return sorted(self._specs, key=_sort_key)
 
     def get(self, alias: str) -> ModelSpec:
         if alias not in self._specs:
