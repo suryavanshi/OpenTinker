@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Callable, Sequence
 
 import torch
 
@@ -16,6 +16,8 @@ from .sampling_client import SamplingClient
 @dataclass
 class ForwardBackwardResponse:
     loss: float
+    metrics: dict[str, float]
+    loss_fn_outputs: dict[str, torch.Tensor]
 
 
 class TrainingClient:
@@ -32,7 +34,25 @@ class TrainingClient:
 
     def forward_backward(self, batch: Sequence[Datum], loss_fn: str = "cross_entropy") -> ImmediateFuture[ForwardBackwardResponse]:
         result = engine.forward_backward(self._model, batch, loss_fn, device=self._device)
-        return ImmediateFuture(ForwardBackwardResponse(loss=result.loss))
+        response = ForwardBackwardResponse(
+            loss=result.loss,
+            metrics=result.metrics,
+            loss_fn_outputs=result.loss_fn_outputs,
+        )
+        return ImmediateFuture(response)
+
+    def forward_backward_custom(
+        self,
+        batch: Sequence[Datum],
+        loss_fn: Callable[[Sequence[Datum], torch.Tensor], engine.CustomLossOutputs],
+    ) -> ImmediateFuture[ForwardBackwardResponse]:
+        result = engine.forward_backward_custom(self._model, batch, loss_fn, device=self._device)
+        response = ForwardBackwardResponse(
+            loss=result.loss,
+            metrics=result.metrics,
+            loss_fn_outputs=result.loss_fn_outputs,
+        )
+        return ImmediateFuture(response)
 
     def optim_step(self, params: AdamParams) -> ImmediateFuture[dict]:
         self._optimiser = engine.ensure_adam(self._model, self._optimiser, params)
