@@ -1,8 +1,9 @@
 # Rinker
 
-Rinker is an open-source reinforcement learning fine-tuning framework inspired by Tinker. This documentation summarises the
-core concepts, the public API, and the reference CLI that allows you to reproduce the "Your first RL run" walkthrough with a
-single command.
+Rinker is an open-source reinforcement learning fine-tuning framework inspired by Tinker. The project is now published under
+the Apache-2.0 license and is distributed on PyPI, making it possible to `pip install rinker` in fresh environments. This
+documentation summarises the core concepts, the public API, and the reference CLI that allows you to reproduce the "Your
+first RL run" walkthrough with a single command.
 
 * **Train** – use `rinker train sl|rl -c <config>` to run supervised or reinforcement learning jobs locally on Ray.
 * **Evaluate** – schedule inline evaluation hooks and sweep saved checkpoints offline to produce reward plots.

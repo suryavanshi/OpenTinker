@@ -8,5 +8,6 @@ nav:
       - Losses: recipes/losses.md
       - Reinforcement Learning: recipes/rl.md
       - Rendering: recipes/rendering.md
+  - Benchmarks: benchmarks.md
 theme:
   name: material

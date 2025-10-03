@@ -9,7 +9,7 @@ from typing import Iterable, List, Mapping, Sequence
 import torch
 
 from ...api.service_client import ServiceClient
-from ...core.engine import SimpleLanguageModel
+from ...core.engine import LoRAConfig, SimpleLanguageModel
 from ...core.types import AdamParams, Datum, ModelInput, SamplingParams
 from ...eval.inline import InlineEvaluator
 from ...rl import Env, EnvAction, EnvGroupBuilder, EnvObservation, RLDataset
@@ -65,7 +65,20 @@ class MathEnv(Env):
 def build_reference_model(training_client) -> SimpleLanguageModel:
     runtime = training_client._runtime  # type: ignore[attr-defined]
     state_dict = runtime.get_state()
-    model = SimpleLanguageModel(runtime.tokenizer.vocab_size)
+    config = runtime.config
+    hidden_size = runtime.model_spec.hidden_size or 128
+    lora_config = None
+    if config.lora_rank > 0:
+        lora_config = LoRAConfig(
+            rank=config.lora_rank,
+            alpha=config.lora_alpha,
+            dropout=config.lora_dropout,
+        )
+    model = SimpleLanguageModel(
+        runtime.tokenizer.vocab_size,
+        hidden_size=hidden_size,
+        lora_config=lora_config,
+    )
     model.load_state_dict(state_dict)
     model.eval()
     return model

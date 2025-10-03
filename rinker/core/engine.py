@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.cuda.amp import GradScaler
+from torch.nn.utils.rnn import pad_sequence
 
 from . import losses
 from .lora import LoRAConfig, apply_lora
@@ -79,7 +80,8 @@ def forward_backward(
         raise ValueError(f"Unknown loss '{loss_name}'")
 
     model.train()
-    inputs = torch.cat([datum.model_input.to_batch(device) for datum in batch], dim=0)
+    input_tensors = [datum.model_input.to_batch(device).squeeze(0) for datum in batch]
+    inputs = pad_sequence(input_tensors, batch_first=True)
     autocast = (
         torch.autocast(device_type=device.type, dtype=amp_dtype)
         if amp_dtype is not None
@@ -134,7 +136,8 @@ def forward_backward_custom(
     """Runs a forward/backward pass using a custom loss defined on log-probs."""
 
     model.train()
-    inputs = torch.cat([datum.model_input.to_batch(device) for datum in batch], dim=0)
+    input_tensors = [datum.model_input.to_batch(device).squeeze(0) for datum in batch]
+    inputs = pad_sequence(input_tensors, batch_first=True)
     autocast = (
         torch.autocast(device_type=device.type, dtype=amp_dtype)
         if amp_dtype is not None
@@ -207,17 +210,26 @@ def _gather_tensor_inputs(batch: Sequence[Datum], device: torch.device) -> Dict[
 
     stacked: Dict[str, torch.Tensor] = {}
     for key in tensor_keys:
-        tensors = []
+        tensors: list[torch.Tensor] = []
         for datum in batch:
             if key not in datum.loss_fn_inputs:
                 raise KeyError(f"Missing required tensor '{key}' in datum")
             value = datum.loss_fn_inputs[key]
             if not isinstance(value, torch.Tensor):
                 raise TypeError(f"Expected tensor for key '{key}' but received {type(value)!r}")
-            tensor = value.to(device)
-            tensor = tensor.unsqueeze(0)
-            tensors.append(tensor)
-        stacked[key] = torch.cat(tensors, dim=0)
+            tensors.append(value.to(device))
+        if not tensors:
+            continue
+        reference_shape = tensors[0].shape
+        if all(tensor.shape == reference_shape for tensor in tensors):
+            stacked[key] = torch.stack(tensors, dim=0)
+            continue
+        if all(tensor.dim() == 1 for tensor in tensors):
+            stacked[key] = pad_sequence(tensors, batch_first=True)
+            continue
+        raise ValueError(
+            f"Incompatible tensor shapes for key '{key}': {[tuple(t.shape) for t in tensors]}"
+        )
     return stacked
 
 

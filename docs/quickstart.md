@@ -5,9 +5,9 @@ All commands run locally using the Ray runtime that ships with the framework.
 
 ## Requirements
 
-1. Install the Python dependencies:
+1. Install Rinker from PyPI (or `pip install -e .` for local development):
    ```bash
-   pip install -r requirements.txt
+   pip install rinker
    ```
 2. Ensure that Ray can initialise in your environment (the default configuration uses CPU-only actors).
 

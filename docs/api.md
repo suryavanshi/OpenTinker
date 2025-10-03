@@ -15,6 +15,9 @@ Rinker's public API mirrors Tinker's Service/Training/Sampling trio. The followi
 | | `stream_minibatch_train(dataset, ...)` | Utility for streaming PPO/IS updates. |
 | `SamplingClient` | `sample(model_input, sampling_params, num_samples)` | Generates completions with per-token log-probabilities. |
 
+The names and call signatures above are now locked for the 0.1 release line to maintain drop-in compatibility with Tinker.
+Breaking changes will require a major version bump and an explicit deprecation path in the documentation.
+
 ### Checkpointing helpers
 
 The CLI wraps :class:`rinker.utils.checkpointing.CheckpointManager`, which saves the following artefacts into each step directory:

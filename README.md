@@ -6,10 +6,11 @@ experiments, scheduling evaluations, and exporting LoRA adapters.
 
 ## Getting started
 
-1. Install dependencies:
+1. Install the package from PyPI:
    ```bash
-   pip install -r requirements.txt
+   pip install rinker
    ```
+   The source tree can still be installed in editable mode with `pip install -e .` for development workflows.
 2. Launch the "first RL run" analogue:
    ```bash
    rinker train rl -c configs/rl/first_run.yaml
@@ -23,7 +24,8 @@ experiments, scheduling evaluations, and exporting LoRA adapters.
    rinker export --checkpoint checkpoints/first_run/step_000020 --output exports/first_run
    ```
 
-See the [docs site](docs/index.md) for a quickstart, API reference, and recipes that mirror the Tinker cookbook.
+See the [docs site](docs/index.md) for a quickstart, API reference, and recipes that mirror the Tinker cookbook, including
+new RLVR, RLHF, and multi-agent walkthroughs.
 
 ## Scaling beyond a single GPU
 

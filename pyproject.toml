@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rinker"
+version = "0.1.0"
+description = "Rinker – a Tinker-compatible reinforcement learning fine-tuning framework"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "OpenTinker Contributors"},
+]
+dependencies = [
+    "torch>=2.4",
+    "numpy",
+    "ray==2.32.0",
+    "PyYAML>=6.0",
+    "safetensors>=0.4",
+    "matplotlib>=3.8",
+    "transformers>=4.44",
+    "tensorboard>=2.16",
+    "wandb>=0.16",
+    "pynvml>=11.5",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/opentinker/rinker"
+"Documentation" = "https://opentinker.github.io/rinker"
+
+[project.scripts]
+rinker = "rinker.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rinker*"]
+
+[tool.setuptools.package-data]
+"rinker" = ["py.typed"]
