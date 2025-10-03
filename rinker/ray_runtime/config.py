@@ -18,7 +18,11 @@ class RayRuntimeConfig:
 
     num_sampler_actors: int = 1
     learner_num_gpus: float = 0.0
+    learner_num_cpus: float = 1.0
+    learner_mode: str = "single"  # single|ddp|fsdp
+    learner_backend: str = "nccl"
     sampler_num_gpus: float = 0.0
+    sampler_num_cpus: float = 1.0
     reward_num_cpus: float = 0.0
     max_inflight_rollouts: int = 8
     sampler_backend: str = "torch"
@@ -29,6 +33,14 @@ class RayRuntimeConfig:
     gradient_accumulation_steps: int = 1
     max_steps_off_policy: int = 0
     stream_minibatch: StreamMinibatchConfig | None = None
+    base_model: str = "tiny-char-gpt"
+    use_placement_group: bool = True
+    placement_strategy: str = "PACK"
+    placement_timeout_s: float = 120.0
+    tensorboard_logdir: str | None = None
+    wandb_project: str | None = None
+    wandb_run_name: str | None = None
+    wandb_entity: str | None = None
 
     def learner_kwargs(self) -> dict[str, object]:
         return {
@@ -37,6 +49,8 @@ class RayRuntimeConfig:
             "lora_dropout": self.lora_dropout,
             "amp_dtype": self.amp_dtype,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
+            "learner_mode": self.learner_mode,
+            "distributed_backend": self.learner_backend,
         }
 
     def sampler_kwargs(self) -> dict[str, object]:
@@ -45,6 +59,14 @@ class RayRuntimeConfig:
             "lora_alpha": self.lora_alpha,
             "lora_dropout": self.lora_dropout,
             "backend": self.sampler_backend,
+        }
+
+    def telemetry_kwargs(self) -> dict[str, object]:
+        return {
+            "tensorboard_logdir": self.tensorboard_logdir,
+            "wandb_project": self.wandb_project,
+            "wandb_run_name": self.wandb_run_name,
+            "wandb_entity": self.wandb_entity,
         }
 
 

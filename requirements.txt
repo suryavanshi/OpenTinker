@@ -4,3 +4,7 @@ ray==2.32.0
 PyYAML>=6.0
 safetensors>=0.4
 matplotlib>=3.8
+transformers>=4.44
+tensorboard>=2.16
+wandb>=0.16
+pynvml>=11.5

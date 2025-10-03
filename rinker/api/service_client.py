@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import List
 
-from ..utils.tokenizer import SimpleTokenizer
+from ..core.model_zoo import ModelRegistry
 from ..ray_runtime import RayRuntime, RayRuntimeConfig
 from ..ray_runtime.config import StreamMinibatchConfig
 from .training_client import TrainingClient
@@ -19,12 +19,11 @@ class ServiceClient:
     """Factory for training and sampling clients backed by Ray."""
 
     def __init__(self, *, runtime_config: RayRuntimeConfig | None = None) -> None:
-        self._tokenizer = SimpleTokenizer()
-        self._base_models = ["tiny-char-gpt"]
+        self._registry = ModelRegistry()
         self._runtime_config = runtime_config or RayRuntimeConfig()
 
     def get_server_capabilities(self) -> ServiceCapabilities:
-        return ServiceCapabilities(base_models=list(self._base_models))
+        return ServiceCapabilities(base_models=self._registry.list_models())
 
     def create_lora_training_client(
         self,
@@ -32,8 +31,11 @@ class ServiceClient:
         rank: int,
         **kwargs,
     ) -> TrainingClient:
-        if base_model not in self._base_models:
-            raise ValueError(f"Unsupported base model: {base_model}")
+        try:
+            spec = self._registry.get(base_model)
+        except KeyError as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Unsupported base model: {base_model}") from exc
+        tokenizer = self._registry.create_tokenizer(base_model)
         runtime_config = kwargs.pop("runtime_config", None) or self._runtime_config
         updates: dict[str, object] = {"lora_rank": rank}
         allowed = {
@@ -54,8 +56,13 @@ class ServiceClient:
             updates[key] = value
         if kwargs:
             raise TypeError(f"Unexpected keyword arguments: {', '.join(kwargs)}")
+        updates.setdefault("base_model", spec.alias)
         runtime_config = replace(runtime_config, **updates)
-        runtime = RayRuntime(tokenizer=self._tokenizer, config=runtime_config)
+        runtime = RayRuntime(
+            tokenizer=tokenizer,
+            config=runtime_config,
+            model_spec=spec,
+        )
         return TrainingClient(runtime=runtime)
 
 

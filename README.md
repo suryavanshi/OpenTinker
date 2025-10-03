@@ -24,3 +24,11 @@ experiments, scheduling evaluations, and exporting LoRA adapters.
    ```
 
 See the [docs site](docs/index.md) for a quickstart, API reference, and recipes that mirror the Tinker cookbook.
+
+## Scaling beyond a single GPU
+
+The Ray runtime now supports placement groups, distributed learners (DDP/FSDP),
+and telemetry dashboards. See [runtime_scaling.md](docs/runtime_scaling.md) for
+guidance on provisioning 8-GPU nodes (2-GPU learners + 6 sampler GPUs),
+multi-node head/worker deployments, and enabling TensorBoard/W&B throughput
+dashboards.

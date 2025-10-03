@@ -14,7 +14,7 @@ from ..ray_runtime import RayRuntime, RayRuntimeConfig
 from ..ray_runtime.config import StreamMinibatchConfig
 from ..ray_runtime.actors import ForwardBackwardPayload
 from ..utils.futures import RayFuture
-from ..utils.tokenizer import SimpleTokenizer
+from ..utils.tokenizer import TokenizerProtocol
 from .sampling_client import SamplingClient
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
@@ -34,7 +34,7 @@ class TrainingClient:
         self._max_steps_off_policy = runtime.config.max_steps_off_policy
 
     @property
-    def tokenizer(self) -> SimpleTokenizer:
+    def tokenizer(self) -> TokenizerProtocol:
         return self._tokenizer
 
     @property
