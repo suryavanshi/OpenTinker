@@ -1,14 +1,17 @@
 """Training utilities for the local single GPU/CPU backend."""
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Callable, Dict, Mapping, MutableMapping, Sequence
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.cuda.amp import GradScaler
 
 from . import losses
+from .lora import LoRAConfig, apply_lora
 from .types import AdamParams, Datum
 
 
@@ -22,12 +25,20 @@ LOSS_REGISTRY: Dict[str, Callable[..., Dict[str, torch.Tensor]]] = {
 class SimpleLanguageModel(nn.Module):
     """A minimal autoregressive model suitable for quick CPU experiments."""
 
-    def __init__(self, vocab_size: int, hidden_size: int = 128):
+    def __init__(
+        self,
+        vocab_size: int,
+        hidden_size: int = 128,
+        *,
+        lora_config: LoRAConfig | None = None,
+    ) -> None:
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, hidden_size)
         self.rnn = nn.GRU(hidden_size, hidden_size, batch_first=True)
         self.ln = nn.LayerNorm(hidden_size)
         self.head = nn.Linear(hidden_size, vocab_size)
+        if lora_config and lora_config.rank > 0:
+            apply_lora(self, lora_config)
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         embeds = self.embedding(input_ids)
@@ -57,6 +68,10 @@ def forward_backward(
     batch: Sequence[Datum],
     loss_name: str,
     device: torch.device,
+    *,
+    amp_dtype: torch.dtype | None = None,
+    grad_scaler: GradScaler | None = None,
+    accumulation_steps: int = 1,
 ) -> ForwardBackwardOutput:
     """Runs a forward/backward pass for the provided batch."""
 
@@ -65,7 +80,13 @@ def forward_backward(
 
     model.train()
     inputs = torch.cat([datum.model_input.to_batch(device) for datum in batch], dim=0)
-    logits = model(inputs)
+    autocast = (
+        torch.autocast(device_type=device.type, dtype=amp_dtype)
+        if amp_dtype is not None
+        else nullcontext()
+    )
+    with autocast:
+        logits = model(inputs)
     loss_fn = LOSS_REGISTRY[loss_name]
 
     tensor_inputs = _gather_tensor_inputs(batch, device)
@@ -83,7 +104,12 @@ def forward_backward(
 
     result = loss_fn(logits, **kwargs)
     loss = result["loss"]
-    loss.backward()
+    if accumulation_steps > 1:
+        loss = loss / float(accumulation_steps)
+    if grad_scaler is not None:
+        grad_scaler.scale(loss).backward()
+    else:
+        loss.backward()
 
     metrics = _build_metrics(result)
     loss_fn_outputs = _detach_loss_outputs(result)
@@ -100,12 +126,22 @@ def forward_backward_custom(
     batch: Sequence[Datum],
     custom_fn: Callable[[Sequence[Datum], torch.Tensor], CustomLossOutputs],
     device: torch.device,
+    *,
+    amp_dtype: torch.dtype | None = None,
+    grad_scaler: GradScaler | None = None,
+    accumulation_steps: int = 1,
 ) -> ForwardBackwardOutput:
     """Runs a forward/backward pass using a custom loss defined on log-probs."""
 
     model.train()
     inputs = torch.cat([datum.model_input.to_batch(device) for datum in batch], dim=0)
-    logits = model(inputs)
+    autocast = (
+        torch.autocast(device_type=device.type, dtype=amp_dtype)
+        if amp_dtype is not None
+        else nullcontext()
+    )
+    with autocast:
+        logits = model(inputs)
 
     tensor_inputs = _gather_tensor_inputs(batch, device)
     if "target_tokens" not in tensor_inputs:
@@ -121,7 +157,12 @@ def forward_backward_custom(
 
     log_prob_grads = custom_outputs.log_prob_grads.to(target_log_probs.device)
     surrogate = (log_prob_grads * target_log_probs).sum()
-    surrogate.backward()
+    if accumulation_steps > 1:
+        surrogate = surrogate / float(accumulation_steps)
+    if grad_scaler is not None:
+        grad_scaler.scale(surrogate).backward()
+    else:
+        surrogate.backward()
 
     loss_value = custom_outputs.loss
     metric_inputs: Dict[str, torch.Tensor] = {
@@ -210,12 +251,24 @@ def _detach_loss_outputs(result: Mapping[str, torch.Tensor]) -> Dict[str, torch.
 def optim_step(
     model: nn.Module,
     optimiser: torch.optim.Optimizer,
+    *,
+    grad_scaler: GradScaler | None = None,
+    should_step: bool = True,
 ) -> Dict[str, float]:
     """Applies an optimisation step and zeros gradients."""
 
-    optimiser.step()
+    if grad_scaler is not None:
+        grad_scaler.unscale_(optimiser)
+    grad_norm = _total_grad_norm(model)
+    if not should_step:
+        return {"grad_norm": grad_norm, "stepped": False}
+    if grad_scaler is not None:
+        grad_scaler.step(optimiser)
+        grad_scaler.update()
+    else:
+        optimiser.step()
     optimiser.zero_grad(set_to_none=True)
-    return {"grad_norm": _total_grad_norm(model)}
+    return {"grad_norm": grad_norm, "stepped": True}
 
 
 def ensure_adam(

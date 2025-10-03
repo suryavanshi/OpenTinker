@@ -122,6 +122,7 @@ def run_loop(
                         "advantages": torch.zeros_like(targets, dtype=torch.float32),
                         "clip_epsilon": 0.2,
                     },
+                    policy_version=getattr(sample, "weights_version", None),
                 )
 
                 mask = torch.zeros_like(targets, dtype=torch.bool)
@@ -148,6 +149,7 @@ def run_loop(
                     advantage_mask=mask,
                     kl_value=kl_value,
                     metrics=transition.metrics,
+                    policy_version=getattr(sample, "weights_version", None),
                 )
         elapsed = time.time() - start
 

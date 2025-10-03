@@ -3,11 +3,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, List, Mapping, Sequence
+import importlib.util
+import warnings
 
 import torch
 import torch.nn.functional as F
+from torch.cuda.amp import GradScaler
 
 from ..core import engine
+from ..core.lora import LoRAConfig, extract_lora_parameters, merge_lora_weights
 from ..core.types import AdamParams, Datum, ModelInput, SamplingParams
 from ..utils.tokenizer import SimpleTokenizer
 
@@ -39,15 +43,40 @@ def _resolve_device() -> torch.device:
 class LearnerActor:
     """Learner actor that owns the trainable policy."""
 
-    def __init__(self, vocab_size: int) -> None:
+    def __init__(
+        self,
+        vocab_size: int,
+        *,
+        lora_rank: int = 8,
+        lora_alpha: float = 16.0,
+        lora_dropout: float = 0.0,
+        amp_dtype: str | None = None,
+        gradient_accumulation_steps: int = 1,
+    ) -> None:
         self._tokenizer_vocab_size = vocab_size
         self._device = _resolve_device()
-        self._model = engine.SimpleLanguageModel(vocab_size)
+        lora_config = LoRAConfig(rank=lora_rank, alpha=lora_alpha, dropout=lora_dropout)
+        self._model = engine.SimpleLanguageModel(vocab_size, lora_config=lora_config if lora_rank > 0 else None)
         self._model.to(self._device)
         self._optimiser: torch.optim.Optimizer | None = None
+        self._amp_dtype = self._resolve_amp_dtype(amp_dtype)
+        self._grad_scaler = GradScaler(enabled=self._amp_dtype == torch.float16 and self._device.type == "cuda")
+        self._accum_steps = max(int(gradient_accumulation_steps), 1)
+        self._micro_step_progress = 0
+        self._global_step = 0
+        self._pending_optim_state: Mapping[str, object] | None = None
 
     def forward_backward(self, batch: Sequence[Datum], loss_fn: str) -> ForwardBackwardPayload:
-        result = engine.forward_backward(self._model, batch, loss_fn, device=self._device)
+        result = engine.forward_backward(
+            self._model,
+            batch,
+            loss_fn,
+            device=self._device,
+            amp_dtype=self._amp_dtype,
+            grad_scaler=self._grad_scaler if self._grad_scaler.is_enabled() else None,
+            accumulation_steps=self._accum_steps,
+        )
+        self._micro_step_progress += 1
         return ForwardBackwardPayload(
             loss=result.loss,
             metrics=result.metrics,
@@ -59,7 +88,16 @@ class LearnerActor:
         batch: Sequence[Datum],
         loss_fn: Callable[[Sequence[Datum], torch.Tensor], engine.CustomLossOutputs],
     ) -> ForwardBackwardPayload:
-        result = engine.forward_backward_custom(self._model, batch, loss_fn, device=self._device)
+        result = engine.forward_backward_custom(
+            self._model,
+            batch,
+            loss_fn,
+            device=self._device,
+            amp_dtype=self._amp_dtype,
+            grad_scaler=self._grad_scaler if self._grad_scaler.is_enabled() else None,
+            accumulation_steps=self._accum_steps,
+        )
+        self._micro_step_progress += 1
         return ForwardBackwardPayload(
             loss=result.loss,
             metrics=result.metrics,
@@ -68,24 +106,111 @@ class LearnerActor:
 
     def optim_step(self, params: AdamParams) -> Mapping[str, float]:
         self._optimiser = engine.ensure_adam(self._model, self._optimiser, params)
-        return engine.optim_step(self._model, self._optimiser)
+        if self._pending_optim_state is not None:
+            self._optimiser.load_state_dict(self._pending_optim_state)  # type: ignore[arg-type]
+            self._pending_optim_state = None
+        should_step = self._micro_step_progress >= self._accum_steps
+        metrics = engine.optim_step(
+            self._model,
+            self._optimiser,
+            grad_scaler=self._grad_scaler if self._grad_scaler.is_enabled() else None,
+            should_step=should_step,
+        )
+        if metrics.get("stepped"):
+            self._global_step += 1
+            self._micro_step_progress = 0
+        return metrics
 
     def get_state(self) -> Mapping[str, torch.Tensor]:
         state_dict = self._model.state_dict()
         return {key: value.detach().cpu() for key, value in state_dict.items()}
+
+    def save_state(self) -> Mapping[str, object]:
+        optimiser_state = self._optimiser.state_dict() if self._optimiser is not None else None
+        grad_scaler_state = self._grad_scaler.state_dict() if self._grad_scaler.is_enabled() else None
+        model_state = {key: value.detach().cpu() for key, value in self._model.state_dict().items()}
+        return {
+            "model": model_state,
+            "optimiser": optimiser_state,
+            "grad_scaler": grad_scaler_state,
+            "global_step": self._global_step,
+            "accumulation_progress": self._micro_step_progress,
+        }
+
+    def load_state(self, state: Mapping[str, object]) -> None:
+        model_state = state.get("model")
+        if model_state:
+            self._model.load_state_dict(model_state)
+        if self._optimiser is not None and state.get("optimiser") is not None:
+            self._optimiser.load_state_dict(state["optimiser"])  # type: ignore[arg-type]
+        elif state.get("optimiser") is not None:
+            self._pending_optim_state = state["optimiser"]  # type: ignore[assignment]
+            warnings.warn(
+                "Optimiser state deferred until optimiser initialisation",
+                RuntimeWarning,
+            )
+        scaler_state = state.get("grad_scaler")
+        if scaler_state and self._grad_scaler.is_enabled():
+            self._grad_scaler.load_state_dict(scaler_state)  # type: ignore[arg-type]
+        self._global_step = int(state.get("global_step", self._global_step))
+        self._micro_step_progress = int(state.get("accumulation_progress", 0))
+
+    def export_for_hf(self) -> Mapping[str, Mapping[str, torch.Tensor]]:
+        return {
+            "merged": merge_lora_weights(self._model),
+            "adapters": extract_lora_parameters(self._model),
+        }
+
+    @staticmethod
+    def _resolve_amp_dtype(value: str | None) -> torch.dtype | None:
+        if value is None:
+            return None
+        mapping = {
+            "float16": torch.float16,
+            "fp16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "bf16": torch.bfloat16,
+        }
+        if value.lower() not in mapping:
+            raise ValueError(f"Unsupported AMP dtype '{value}'")
+        return mapping[value.lower()]
 
 
 @ray.remote
 class SamplerActor:
     """Sampler actor responsible for autoregressive generation."""
 
-    def __init__(self, tokenizer: SimpleTokenizer):
+    def __init__(
+        self,
+        tokenizer: SimpleTokenizer,
+        *,
+        lora_rank: int = 0,
+        lora_alpha: float = 16.0,
+        lora_dropout: float = 0.0,
+        backend: str = "torch",
+    ):
         self._tokenizer = tokenizer
         self._device = _resolve_device()
-        self._model = engine.SimpleLanguageModel(tokenizer.vocab_size)
+        lora_config = LoRAConfig(rank=lora_rank, alpha=lora_alpha, dropout=lora_dropout)
+        self._model = engine.SimpleLanguageModel(
+            tokenizer.vocab_size,
+            lora_config=lora_config if lora_rank > 0 else None,
+        )
         self._model.to(self._device)
         self._model.eval()
         self._stop_sequences: List[str] = []
+        self._backend = backend
+        if backend == "vllm":
+            if importlib.util.find_spec("vllm") is None:
+                warnings.warn(
+                    "vLLM backend requested but vllm is not installed; falling back to torch sampler",
+                    RuntimeWarning,
+                )
+                self._backend = "torch"
+            else:  # pragma: no cover - optional path
+                import vllm  # type: ignore
+
+                self._vllm = vllm
 
     def set_weights(self, state_dict: Mapping[str, torch.Tensor]) -> None:
         self._model.load_state_dict(state_dict)

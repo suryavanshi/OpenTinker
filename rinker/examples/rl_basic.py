@@ -68,7 +68,11 @@ def build_batch(
                 "advantages": advantages,
                 "clip_epsilon": clip_epsilon,
             }
-            datum = Datum(model_input=ModelInput(token_chunks=[inputs]), loss_fn_inputs=loss_inputs)
+            datum = Datum(
+                model_input=ModelInput(token_chunks=[inputs]),
+                loss_fn_inputs=loss_inputs,
+                policy_version=getattr(sample, "weights_version", None),
+            )
             group.append((reward, datum, completion_start))
 
         if not group:

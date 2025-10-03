@@ -38,6 +38,8 @@ def build_datums(
     sample_text: str,
     logprobs: Sequence[float],
     clip_epsilon: float,
+    *,
+    weights_version: int | None = None,
 ) -> Datum:
     token_ids = torch.tensor(tokenizer.encode(sample_text), dtype=torch.long)
     inputs = token_ids[:-1]
@@ -55,6 +57,7 @@ def build_datums(
             "advantages": torch.zeros_like(targets, dtype=torch.float32),
             "clip_epsilon": clip_epsilon,
         },
+        policy_version=weights_version,
     )
     return datum
 
@@ -93,7 +96,14 @@ def run_iteration(
             completion = sample.text[len(spec.prompt) :]
             reward = ray_reward_evaluation(reward_actor, spec.prompt, completion, spec.answer)
             group_rewards.append(reward)
-            datum = build_datums(tokenizer, spec.prompt, sample.text, sample.logprobs, clip_epsilon)
+            datum = build_datums(
+                tokenizer,
+                spec.prompt,
+                sample.text,
+                sample.logprobs,
+                clip_epsilon,
+                weights_version=getattr(sample, "weights_version", None),
+            )
             group_data.append(datum)
 
         if not group_rewards:

@@ -4,9 +4,11 @@ import torch
 from rinker.api.service_client import ServiceClient
 from rinker.core.types import AdamParams, Datum, ModelInput, SamplingParams
 from rinker.ray_runtime import RayRuntimeConfig
+from rinker.ray_runtime.config import StreamMinibatchConfig
+from rinker.rl.dataset import RLDataset
 
 
-def _build_batch(tokenizer):
+def _build_batch(tokenizer, policy_version: int | None = None):
     prompt = "hi"
     completion = " there"
     tokens = torch.tensor(tokenizer.encode(prompt + completion), dtype=torch.long)
@@ -18,16 +20,17 @@ def _build_batch(tokenizer):
             "targets": targets,
             "weights": torch.ones_like(targets, dtype=torch.float32),
         },
+        policy_version=policy_version,
     )
     return [datum]
 
 
 def test_training_client_uses_ray_runtime():
-    config = RayRuntimeConfig(num_sampler_actors=1, max_inflight_rollouts=2)
+    config = RayRuntimeConfig(num_sampler_actors=1, max_inflight_rollouts=2, max_steps_off_policy=3)
     service = ServiceClient(runtime_config=config)
     base_model = service.get_server_capabilities().base_models[0]
     training = service.create_lora_training_client(base_model, rank=4)
-    batch = _build_batch(training.tokenizer)
+    batch = _build_batch(training.tokenizer, training._runtime.weights_version)  # type: ignore[attr-defined]
 
     fb_future = training.forward_backward(batch, loss_fn="cross_entropy")
     fb_result = fb_future.result()
@@ -35,9 +38,35 @@ def test_training_client_uses_ray_runtime():
 
     optim_metrics = training.optim_step(AdamParams(lr=1e-2)).result()
     assert "grad_norm" in optim_metrics
+    assert optim_metrics.get("stepped") is not None
 
     sampler = training.save_weights_and_get_sampling_client("test-ray")
     params = SamplingParams(max_new_tokens=4, temperature=0.8)
     sample = sampler.sample(batch[0].model_input, params, num_samples=1)[0]
     assert sample.text
+
+    dataset = RLDataset()
+    for idx, datum in enumerate(batch):
+        token_count = int(datum.loss_fn_inputs["targets"].shape[0])
+        dataset.add_sample(
+            group_id=idx,
+            datum=datum,
+            reward=1.0,
+            token_count=token_count,
+            policy_version=datum.policy_version,
+        )
+    responses = training.stream_minibatch_train(
+        dataset,
+        loss_fn="cross_entropy",
+        optimiser=AdamParams(lr=1e-2),
+        config=StreamMinibatchConfig(groups_per_batch=1, num_minibatches=1),
+    )
+    assert responses and responses[0].loss >= 0
+
+    export = training.export_lora_weights()
+    assert "merged" in export and "adapters" in export
+
+    state = training.save_state()
+    training.load_state(state)
+
     ray.shutdown()

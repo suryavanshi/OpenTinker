@@ -18,6 +18,7 @@ class SamplingResult:
     token_ids: List[int]
     logprobs: List[float]
     parsed_response: str | None = None
+    weights_version: int | None = None
 
 
 class SamplingClient:
@@ -67,6 +68,7 @@ class SamplingClient:
                 token_ids=result.token_ids,
                 logprobs=result.logprobs,
                 parsed_response=result.parsed_response,
+                weights_version=result.weights_version,
             )
             for result in results
         ]
@@ -97,7 +99,14 @@ class SamplingClient:
                 if self._should_stop(decoded, sampling_params):
                     break
             text = self._tokenizer.decode(token_ids)
-            results.append(SamplingResult(text=text, token_ids=token_ids, logprobs=generated_logprobs))
+            results.append(
+                SamplingResult(
+                    text=text,
+                    token_ids=token_ids,
+                    logprobs=generated_logprobs,
+                    weights_version=self._weights_version,
+                )
+            )
         return results
 
     def _select_token(self, logits: torch.Tensor, params: SamplingParams) -> tuple[int, float]:
@@ -137,6 +146,10 @@ class SamplingClient:
         if not params.stop_sequences:
             return False
         return any(decoded.endswith(stop) for stop in params.stop_sequences)
+
+    @property
+    def weights_version(self) -> int | None:
+        return self._weights_version
 
 
 __all__ = ["SamplingClient", "SamplingResult"]
