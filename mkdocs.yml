@@ -1,0 +1,12 @@
+site_name: Rinker Documentation
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - API Reference: api.md
+  - Recipes:
+      - Training & Sampling: recipes/training_sampling.md
+      - Losses: recipes/losses.md
+      - Reinforcement Learning: recipes/rl.md
+      - Rendering: recipes/rendering.md
+theme:
+  name: material
