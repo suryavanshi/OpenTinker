@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from ..core.types import ModelInput, SamplingParams
 from ..ray_runtime import RayRuntime
-from ..utils.tokenizer import SimpleTokenizer
+from ..utils.tokenizer import TokenizerProtocol
 
 
 @dataclass
@@ -27,7 +27,7 @@ class SamplingClient:
     def __init__(
         self,
         *,
-        tokenizer: SimpleTokenizer,
+        tokenizer: TokenizerProtocol,
         model: torch.nn.Module | None = None,
         runtime: RayRuntime | None = None,
         weights_version: int | None = None,

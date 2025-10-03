@@ -1,0 +1,15 @@
+# Example Ray runtime configuration for an 8 GPU node.
+# Uses 2 GPUs for the learner (DDP) and 6 GPUs for sampler actors.
+num_sampler_actors: 6
+learner_num_gpus: 2
+learner_num_cpus: 4
+learner_mode: ddp
+learner_backend: nccl
+sampler_num_gpus: 1
+sampler_num_cpus: 1
+base_model: qwen3-moe-a14b
+use_placement_group: true
+placement_strategy: STRICT_PACK
+tensorboard_logdir: ./runs/ray
+wandb_project: rinker-scaling
+wandb_run_name: learner-ddp-8gpu

@@ -12,7 +12,7 @@ import torch
 import yaml
 from safetensors.torch import save_file
 
-from .tokenizer import SimpleTokenizer
+from .tokenizer import TokenizerProtocol
 
 
 @dataclass(slots=True)
@@ -31,7 +31,7 @@ class CheckpointManager:
         self,
         *,
         training_client,
-        tokenizer: SimpleTokenizer,
+        tokenizer: TokenizerProtocol,
         output_dir: Path,
         every_steps: int = 0,
         keep_last: Optional[int] = None,
