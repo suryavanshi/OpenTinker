@@ -1,0 +1,50 @@
+seed: 1234
+lora_rank: 4
+checkpoint:
+  dir: checkpoints/first_run
+  every_steps: 5
+  keep_last: 4
+rl:
+  loop:
+    iterations: 20
+    batch_size: 4
+    group_size: 4
+    num_substeps: 1
+    beta_kl: 0.0
+    loss: ppo
+    learning_rate: 0.005
+  sampling:
+    max_new_tokens: 4
+    temperature: 0.7
+  tasks:
+    - prompt: "1+1="
+      answer: "2"
+    - prompt: "2+2="
+      answer: "4"
+    - prompt: "3+3="
+      answer: "6"
+    - prompt: "4+4="
+      answer: "8"
+    - prompt: "5+5="
+      answer: "10"
+    - prompt: "6+3="
+      answer: "9"
+    - prompt: "7+2="
+      answer: "9"
+    - prompt: "8+1="
+      answer: "9"
+  eval:
+    every_steps: 5
+    num_env_groups: 4
+    group_size: 4
+    sampling:
+      max_new_tokens: 4
+      temperature: 0.7
+    output_dir: checkpoints/first_run/eval
+  offline_eval:
+    num_env_groups: 8
+    group_size: 4
+    sampling:
+      max_new_tokens: 4
+      temperature: 0.7
+    output_dir: checkpoints/first_run/offline

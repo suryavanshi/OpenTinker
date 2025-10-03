@@ -11,8 +11,21 @@ import torch
 from ...api.service_client import ServiceClient
 from ...core.engine import SimpleLanguageModel
 from ...core.types import AdamParams, Datum, ModelInput, SamplingParams
+from ...eval.inline import InlineEvaluator
 from ...rl import Env, EnvAction, EnvGroupBuilder, EnvObservation, RLDataset
+from ...utils.checkpointing import CheckpointManager
 from ...utils.seeding import seed_everything
+
+
+__all__ = [
+    "MathTask",
+    "MathEnv",
+    "build_envs",
+    "build_reference_model",
+    "LoopConfig",
+    "RLTrainer",
+    "main",
+]
 
 
 @dataclass
@@ -49,7 +62,7 @@ class MathEnv(Env):
         )
 
 
-def _reference_model(training_client) -> SimpleLanguageModel:
+def build_reference_model(training_client) -> SimpleLanguageModel:
     runtime = training_client._runtime  # type: ignore[attr-defined]
     state_dict = runtime.get_state()
     model = SimpleLanguageModel(runtime.tokenizer.vocab_size)
@@ -70,7 +83,9 @@ def _sequence_logprobs(model: SimpleLanguageModel, token_ids: Sequence[int]) -> 
         return gathered
 
 
-def _build_envs(tokenizer, tasks: Iterable[MathTask]) -> List[Env]:
+def build_envs(tokenizer, tasks: Iterable[MathTask]) -> List[Env]:
+    """Constructs RL environments for the provided arithmetic tasks."""
+
     return [MathEnv(task, tokenizer) for task in tasks]
 
 
@@ -130,11 +145,23 @@ class LoopConfig:
 
 
 class RLTrainer:
-    def __init__(self, *, training_client, reference_model: SimpleLanguageModel, config: LoopConfig) -> None:
+    def __init__(
+        self,
+        *,
+        training_client,
+        reference_model: SimpleLanguageModel,
+        config: LoopConfig,
+        checkpoint_manager: CheckpointManager | None = None,
+        inline_evaluator: InlineEvaluator | None = None,
+        training_config: Mapping[str, object] | None = None,
+    ) -> None:
         self._training = training_client
         self._reference_model = reference_model
         self._config = config
         self._optim = AdamParams(lr=config.learning_rate)
+        self._checkpoint_manager = checkpoint_manager
+        self._inline_evaluator = inline_evaluator
+        self._training_config = training_config
 
     def run(self, builder: EnvGroupBuilder, sampling_params: SamplingParams) -> None:
         for step in range(self._config.iterations):
@@ -210,6 +237,29 @@ class RLTrainer:
                 extras = " ".join(f"{k}={v:.3f}" for k, v in sorted(summary_metrics.items()))
                 print(f"    metrics: {extras}")
 
+            if self._checkpoint_manager is not None:
+                self._checkpoint_manager.maybe_save(
+                    step,
+                    training_config=self._training_config,
+                )
+
+            if self._inline_evaluator is not None:
+                inline = self._inline_evaluator.maybe_run(step, training_client=self._training)
+                if inline is not None:
+                    metric_summary = " ".join(
+                        f"{k}={v:.3f}" for k, v in sorted(inline.metrics.items())
+                    )
+                    if metric_summary:
+                        metric_summary = f" metrics[{metric_summary}]"
+                    print(
+                        "    inline_eval: reward={reward:.3f} std={std:.3f} accept={accept:.2f}{metrics}".format(
+                            reward=inline.reward_mean,
+                            std=inline.reward_std,
+                            accept=inline.acceptance,
+                            metrics=metric_summary,
+                        )
+                    )
+
     def _run_updates(self, dataset: RLDataset) -> Mapping[str, float]:
         schedule = self._training.runtime_config.stream_minibatch
         if schedule is not None:
@@ -247,7 +297,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     training = service.create_lora_training_client(base_model, rank=4)
     tokenizer = training.tokenizer
 
-    reference = _reference_model(training)
+    reference = build_reference_model(training)
 
     tasks = [
         MathTask("1+1=", "2"),
@@ -259,7 +309,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         MathTask("7+2=", "9"),
         MathTask("8+1=", "9"),
     ]
-    envs = _build_envs(tokenizer, tasks)
+    envs = build_envs(tokenizer, tasks)
     builder = EnvGroupBuilder(envs)
 
     config = LoopConfig(
