@@ -1,14 +1,16 @@
-"""Training client implementing the synchronous week 1 API."""
+"""Training client backed by Ray actors."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import Callable, Iterable, Sequence
 
 import torch
 
 from ..core import engine
 from ..core.types import AdamParams, Datum
-from ..utils.futures import ImmediateFuture
+from ..ray_runtime import RayRuntime
+from ..ray_runtime.actors import ForwardBackwardPayload
+from ..utils.futures import RayFuture
 from ..utils.tokenizer import SimpleTokenizer
 from .sampling_client import SamplingClient
 
@@ -21,48 +23,49 @@ class ForwardBackwardResponse:
 
 
 class TrainingClient:
-    def __init__(self, *, model: torch.nn.Module, tokenizer: SimpleTokenizer) -> None:
-        self._model = model
-        self._tokenizer = tokenizer
-        self._device = torch.device("cpu")
-        self._model.to(self._device)
-        self._optimiser: torch.optim.Optimizer | None = None
+    def __init__(self, *, runtime: RayRuntime) -> None:
+        self._runtime = runtime
+        self._tokenizer = runtime.tokenizer
 
     @property
     def tokenizer(self) -> SimpleTokenizer:
         return self._tokenizer
 
-    def forward_backward(self, batch: Sequence[Datum], loss_fn: str = "cross_entropy") -> ImmediateFuture[ForwardBackwardResponse]:
-        result = engine.forward_backward(self._model, batch, loss_fn, device=self._device)
-        response = ForwardBackwardResponse(
-            loss=result.loss,
-            metrics=result.metrics,
-            loss_fn_outputs=result.loss_fn_outputs,
-        )
-        return ImmediateFuture(response)
+    def forward_backward(
+        self,
+        batch: Sequence[Datum],
+        loss_fn: str = "cross_entropy",
+    ) -> RayFuture[ForwardBackwardResponse]:
+        payload_future = self._runtime.forward_backward(batch, loss_fn)
+        return RayFuture(payload_future.object_ref, self._build_response)
 
     def forward_backward_custom(
         self,
         batch: Sequence[Datum],
         loss_fn: Callable[[Sequence[Datum], torch.Tensor], engine.CustomLossOutputs],
-    ) -> ImmediateFuture[ForwardBackwardResponse]:
-        result = engine.forward_backward_custom(self._model, batch, loss_fn, device=self._device)
-        response = ForwardBackwardResponse(
-            loss=result.loss,
-            metrics=result.metrics,
-            loss_fn_outputs=result.loss_fn_outputs,
-        )
-        return ImmediateFuture(response)
+    ) -> RayFuture[ForwardBackwardResponse]:
+        payload_future = self._runtime.forward_backward_custom(batch, loss_fn)
+        return RayFuture(payload_future.object_ref, self._build_response)
 
-    def optim_step(self, params: AdamParams) -> ImmediateFuture[dict]:
-        self._optimiser = engine.ensure_adam(self._model, self._optimiser, params)
-        metrics = engine.optim_step(self._model, self._optimiser)
-        return ImmediateFuture(metrics)
+    def optim_step(self, params: AdamParams) -> RayFuture[dict]:
+        return self._runtime.optim_step(params)
 
     def save_weights_and_get_sampling_client(self, name: str) -> SamplingClient:
-        model_copy = engine.SimpleLanguageModel(self._tokenizer.vocab_size)
-        model_copy.load_state_dict(self._model.state_dict())
-        return SamplingClient(model=model_copy, tokenizer=self._tokenizer)
+        version = self._runtime.refresh_sampler_weights()
+        return SamplingClient(runtime=self._runtime, tokenizer=self._tokenizer, weights_version=version)
+
+    def create_reward_actors(self, reward_fns: Iterable[Callable[..., float]]):
+        return self._runtime.create_reward_actors(reward_fns)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _build_response(self, payload: ForwardBackwardPayload) -> ForwardBackwardResponse:
+        return ForwardBackwardResponse(
+            loss=payload.loss,
+            metrics=dict(payload.metrics),
+            loss_fn_outputs=dict(payload.loss_fn_outputs),
+        )
 
 
 __all__ = ["TrainingClient", "ForwardBackwardResponse"]

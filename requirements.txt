@@ -1,2 +1,3 @@
 torch==2.4.1
 numpy
+ray==2.32.0
