@@ -1,13 +1,14 @@
-"""Sampling client for synchronous inference."""
+"""Sampling client supporting both local and Ray-backed inference."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Literal
 
 import torch
 import torch.nn.functional as F
 
 from ..core.types import ModelInput, SamplingParams
+from ..ray_runtime import RayRuntime
 from ..utils.tokenizer import SimpleTokenizer
 
 
@@ -16,15 +17,39 @@ class SamplingResult:
     text: str
     token_ids: List[int]
     logprobs: List[float]
+    parsed_response: str | None = None
 
 
 class SamplingClient:
-    def __init__(self, *, model: torch.nn.Module, tokenizer: SimpleTokenizer) -> None:
-        self._model = model
+    """Sampling client that can run locally or via the Ray sampler pool."""
+
+    def __init__(
+        self,
+        *,
+        tokenizer: SimpleTokenizer,
+        model: torch.nn.Module | None = None,
+        runtime: RayRuntime | None = None,
+        weights_version: int | None = None,
+    ) -> None:
         self._tokenizer = tokenizer
-        self._device = torch.device("cpu")
-        self._model.to(self._device)
-        self._model.eval()
+        if model is not None and runtime is not None:
+            raise ValueError("Provide either a local model or a Ray runtime, not both")
+        if model is not None:
+            self._mode: Literal["local", "ray"] = "local"
+            self._model = model
+            self._device = torch.device("cpu")
+            self._model.to(self._device)
+            self._model.eval()
+            self._runtime = None
+            self._weights_version = None
+        elif runtime is not None:
+            self._mode = "ray"
+            self._model = None
+            self._device = None
+            self._runtime = runtime
+            self._weights_version = weights_version
+        else:
+            raise ValueError("SamplingClient requires either a model or a Ray runtime")
 
     def sample(
         self,
@@ -32,6 +57,31 @@ class SamplingClient:
         sampling_params: SamplingParams,
         num_samples: int = 1,
     ) -> List[SamplingResult]:
+        if self._mode == "local":
+            return self._sample_local(model_input, sampling_params, num_samples)
+        assert self._runtime is not None, "Ray runtime not initialised"
+        results = self._runtime.sample(model_input, sampling_params, num_samples)
+        return [
+            SamplingResult(
+                text=result.text,
+                token_ids=result.token_ids,
+                logprobs=result.logprobs,
+                parsed_response=result.parsed_response,
+            )
+            for result in results
+        ]
+
+    # ------------------------------------------------------------------
+    # Local sampling implementation (used by legacy unit tests)
+    # ------------------------------------------------------------------
+    def _sample_local(
+        self,
+        model_input: ModelInput,
+        sampling_params: SamplingParams,
+        num_samples: int,
+    ) -> List[SamplingResult]:
+        assert self._model is not None
+        assert self._device is not None
         prompt_tokens = model_input.token_chunks[0].to(self._device)
         results: List[SamplingResult] = []
         for _ in range(num_samples):
@@ -65,8 +115,11 @@ class SamplingClient:
         if params.top_p is not None:
             sorted_probs, sorted_idx = torch.sort(probs, descending=True)
             cumulative = torch.cumsum(sorted_probs, dim=-1)
-            mask = cumulative <= params.top_p
-            mask[..., 0] = True
+            if sorted_probs.numel() > 0:
+                mask = cumulative <= params.top_p
+                mask[..., 0] = True
+            else:
+                mask = torch.zeros_like(sorted_probs, dtype=torch.bool)
             filtered_probs = torch.where(mask, sorted_probs, torch.zeros_like(sorted_probs))
             if filtered_probs.sum() == 0:
                 filtered_probs = sorted_probs
@@ -75,11 +128,10 @@ class SamplingClient:
             token_id = token_candidates[sorted_idx[choice]].item()
             logprob = torch.log(filtered_probs[choice] + 1e-12).item()
             return token_id, logprob
-        else:
-            sampled_index = torch.multinomial(probs, 1).item()
-            token_id = token_candidates[sampled_index].item()
-            logprob = torch.log(probs[sampled_index] + 1e-12).item()
-            return token_id, logprob
+        sampled_index = torch.multinomial(probs, 1).item()
+        token_id = token_candidates[sampled_index].item()
+        logprob = torch.log(probs[sampled_index] + 1e-12).item()
+        return token_id, logprob
 
     def _should_stop(self, decoded: str, params: SamplingParams) -> bool:
         if not params.stop_sequences:

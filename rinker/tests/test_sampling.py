@@ -1,5 +1,5 @@
 import torch
-
+import torch
 from rinker.api.sampling_client import SamplingClient
 from rinker.core.types import ModelInput, SamplingParams
 from rinker.utils.tokenizer import SimpleTokenizer
