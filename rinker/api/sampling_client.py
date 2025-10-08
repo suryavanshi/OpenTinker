@@ -1,8 +1,10 @@
 """Sampling client supporting both local and Ray-backed inference."""
 from __future__ import annotations
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import List, Literal
+from typing import List, Literal, Mapping
 
 import torch
 import torch.nn.functional as F
@@ -17,8 +19,10 @@ class SamplingResult:
     text: str
     token_ids: List[int]
     logprobs: List[float]
+    token_logprobs: List[float | None]
     parsed_response: str | None = None
     weights_version: int | None = None
+    processor_inputs: Mapping[str, object] | None = None
 
 
 class SamplingClient:
@@ -67,8 +71,10 @@ class SamplingClient:
                 text=result.text,
                 token_ids=result.token_ids,
                 logprobs=result.logprobs,
+                token_logprobs=result.token_logprobs,
                 parsed_response=result.parsed_response,
                 weights_version=result.weights_version,
+                processor_inputs=result.processor_inputs,
             )
             for result in results
         ]
@@ -89,12 +95,14 @@ class SamplingClient:
         for _ in range(num_samples):
             token_ids = prompt_tokens.clone().tolist()
             generated_logprobs: List[float] = []
+            token_logprobs: List[float | None] = [None] * len(token_ids)
             for _ in range(sampling_params.max_new_tokens):
                 input_tensor = torch.tensor(token_ids, dtype=torch.long, device=self._device).unsqueeze(0)
                 logits = self._model(input_tensor)[0, -1]
                 next_token, logprob = self._select_token(logits, sampling_params)
                 token_ids.append(int(next_token))
                 generated_logprobs.append(float(logprob))
+                token_logprobs.append(float(logprob))
                 decoded = self._tokenizer.decode(token_ids[len(prompt_tokens) :])
                 if self._should_stop(decoded, sampling_params):
                     break
@@ -104,7 +112,9 @@ class SamplingClient:
                     text=text,
                     token_ids=token_ids,
                     logprobs=generated_logprobs,
+                    token_logprobs=token_logprobs,
                     weights_version=self._weights_version,
+                    processor_inputs=None,
                 )
             )
         return results

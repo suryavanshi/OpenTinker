@@ -28,11 +28,13 @@ class SamplingTaskResult:
     text: str
     token_ids: List[int]
     logprobs: List[float]
+    token_logprobs: List[float | None]
     parsed_response: str | None
     weights_version: int
     prompt_tokens: int
     tokenizer_time_s: float
     gpu_utilization: float | None
+    processor_inputs: Mapping[str, object] | None
 
 
 class _ResilientRayFuture(RayFuture):
@@ -307,11 +309,13 @@ class RayRuntime:
                 text=result["text"],
                 token_ids=list(result["token_ids"]),
                 logprobs=list(result["logprobs"]),
+                token_logprobs=list(result.get("token_logprobs", [])),
                 parsed_response=result.get("parsed_response"),
                 weights_version=self._weights_version,
                 prompt_tokens=int(result.get("prompt_tokens", 0)),
                 tokenizer_time_s=float(result.get("tokenizer_time_s", 0.0)),
                 gpu_utilization=result.get("gpu_utilization"),
+                processor_inputs=result.get("processor_inputs"),
             )
             for result in results
         ]

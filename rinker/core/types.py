@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable, List, Mapping, MutableMapping, Optional
+from typing import Any, Iterable, List, Mapping, MutableMapping, Optional
 
 import torch
 
@@ -22,6 +22,7 @@ class ModelInput:
 
     token_chunks: List[torch.Tensor]
     metadata: Mapping[str, object] = field(default_factory=dict)
+    attachments: Mapping[str, Any] | None = None
 
     def to_batch(self, device: Optional[torch.device] = None) -> torch.Tensor:
         """Stacks the token chunks into a single tensor for model consumption."""
