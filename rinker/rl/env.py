@@ -38,6 +38,7 @@ class EnvAction:
 
     token_ids: Sequence[int] | None = None
     logprobs: Sequence[float] | None = None
+    token_logprobs: Sequence[float | None] | None = None
     text: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 

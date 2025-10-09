@@ -34,6 +34,8 @@ class RayRuntimeConfig:
     max_steps_off_policy: int = 0
     stream_minibatch: StreamMinibatchConfig | None = None
     base_model: str = "tiny-char-gpt"
+    vision_processor_name: str | None = None
+    vision_max_pixels: int = 1048576
     use_placement_group: bool = True
     placement_strategy: str = "PACK"
     placement_timeout_s: float = 120.0
@@ -59,6 +61,8 @@ class RayRuntimeConfig:
             "lora_alpha": self.lora_alpha,
             "lora_dropout": self.lora_dropout,
             "backend": self.sampler_backend,
+            "vision_processor": self.vision_processor_name,
+            "vision_max_pixels": self.vision_max_pixels,
         }
 
     def telemetry_kwargs(self) -> dict[str, object]:

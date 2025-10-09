@@ -34,3 +34,5 @@ def test_sampling_respects_stop_sequences():
 
     assert result.text.endswith(stop_token)
     assert len(result.logprobs) == 1
+    assert len(result.token_logprobs) == len(result.token_ids)
+    assert result.token_logprobs[len(prompt_tokens)] is not None

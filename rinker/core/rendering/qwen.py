@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Sequence
 
-from .base import ChatMessage, Renderer
+from .base import ChatMessage, Renderer, _collect_text
 
 
 class QwenRenderer(Renderer):
@@ -12,15 +12,21 @@ class QwenRenderer(Renderer):
     ASSISTANT_PREFIX = "<|im_start|>assistant\n"
     SUFFIX = "<|im_end|>"
 
-    def build_generation_prompt(self, messages: Sequence[ChatMessage]) -> str:
+    def build_generation_prompt(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        attachments: dict | None = None,
+    ) -> str:
         prompt_parts: List[str] = []
         for message in messages:
+            text = _collect_text(message.content)
             if message.role == "system":
-                prompt_parts.append(f"{self.SYSTEM_PREFIX}{message.content}{self.SUFFIX}\n")
+                prompt_parts.append(f"{self.SYSTEM_PREFIX}{text}{self.SUFFIX}\n")
             elif message.role == "user":
-                prompt_parts.append(f"{self.USER_PREFIX}{message.content}{self.SUFFIX}\n")
+                prompt_parts.append(f"{self.USER_PREFIX}{text}{self.SUFFIX}\n")
             elif message.role == "assistant":
-                prompt_parts.append(f"{self.ASSISTANT_PREFIX}{message.content}{self.SUFFIX}\n")
+                prompt_parts.append(f"{self.ASSISTANT_PREFIX}{text}{self.SUFFIX}\n")
             else:
                 raise ValueError(f"Unsupported role: {message.role}")
         prompt_parts.append(f"{self.ASSISTANT_PREFIX}")

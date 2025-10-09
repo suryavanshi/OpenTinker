@@ -27,6 +27,15 @@ experiments, scheduling evaluations, and exporting LoRA adapters.
 See the [docs site](docs/index.md) for a quickstart, API reference, and recipes that mirror the Tinker cookbook, including
 new RLVR, RLHF, and multi-agent walkthroughs.
 
+## Vision-language models
+
+Rinker now exposes an experimental vision stack for multimodal models such as
+Qwen3-VL-30B-A3B. The Ray sampler ships with an image-aware configuration block
+(`vision_processor_name`, `vision_max_pixels`) and integrates with the new
+`QwenVLMRenderer`, enabling multi-modal prompts, pixel down-scaling, and
+per-token log probabilities for captioning-style rewards. See the forthcoming
+DocVQA/ChartQA examples for a complete pipeline.
+
 ## Scaling beyond a single GPU
 
 The Ray runtime now supports placement groups, distributed learners (DDP/FSDP),

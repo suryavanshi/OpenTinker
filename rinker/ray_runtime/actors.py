@@ -10,7 +10,7 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterable, List, Mapping, MutableMapping, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
 import torch
 import torch.distributed as dist
@@ -753,6 +753,8 @@ class SamplerActor:
         lora_dropout: float = 0.0,
         backend: str = "torch",
         hidden_size: int | None = None,
+        vision_processor: str | Any | None = None,
+        vision_max_pixels: int = 1048576,
     ):
         self._tokenizer = tokenizer
         self._device = _resolve_device()
@@ -766,6 +768,8 @@ class SamplerActor:
         self._model.eval()
         self._stop_sequences: List[str] = []
         self._backend = backend
+        self._vision_max_pixels = int(vision_max_pixels)
+        self._vision_processor = self._initialise_vision_processor(vision_processor)
         if backend == "vllm":
             if importlib.util.find_spec("vllm") is None:
                 warnings.warn(
@@ -789,7 +793,7 @@ class SamplerActor:
         sampling_params: SamplingParams,
         num_samples: int,
     ) -> List[Mapping[str, object]]:
-        prompt_tokens, tokenizer_time_s = self._prepare_prompt(model_input)
+        prompt_tokens, tokenizer_time_s, processor_inputs = self._prepare_prompt(model_input)
         prompt_tokens = prompt_tokens.to(self._device)
         prompt_token_count = int(prompt_tokens.numel())
         outputs: List[Mapping[str, object]] = []
@@ -799,12 +803,14 @@ class SamplerActor:
         for _ in range(num_samples):
             token_ids = prompt_tokens.clone().tolist()
             generated_logprobs: List[float] = []
+            token_logprobs: List[float | None] = [None] * len(token_ids)
             for _ in range(sampling_params.max_new_tokens):
                 input_tensor = torch.tensor(token_ids, dtype=torch.long, device=self._device).unsqueeze(0)
                 logits = self._model(input_tensor)[0, -1]
                 token_id, logprob = self._sample_token(logits, sampling_params)
                 token_ids.append(int(token_id))
                 generated_logprobs.append(float(logprob))
+                token_logprobs.append(float(logprob))
 
                 decoded = self._tokenizer.decode(token_ids[len(prompt_tokens) :])
                 if stop_sequences and any(decoded.endswith(stop) for stop in stop_sequences):
@@ -812,34 +818,53 @@ class SamplerActor:
 
             text = self._tokenizer.decode(token_ids)
             parsed = self._parse_response(model_input, text)
+            processor_payload = self._to_serialisable_processor_inputs(processor_inputs)
             outputs.append(
                 {
                     "text": text,
                     "token_ids": token_ids,
                     "logprobs": generated_logprobs,
+                    "token_logprobs": token_logprobs,
                     "parsed_response": parsed,
                     "prompt_tokens": prompt_token_count,
                     "tokenizer_time_s": tokenizer_time_s,
                     "gpu_utilization": gpu_util,
+                    "processor_inputs": processor_payload,
                 }
             )
         return outputs
 
-    def _prepare_prompt(self, model_input: ModelInput) -> tuple[torch.Tensor, float]:
+    def _prepare_prompt(
+        self, model_input: ModelInput
+    ) -> tuple[torch.Tensor, float, Mapping[str, Any]]:
         renderer = model_input.metadata.get("renderer") if model_input.metadata else None
         messages = model_input.metadata.get("messages") if model_input.metadata else None
+        attachments = model_input.attachments
+        processor_payload: Mapping[str, Any] = {}
         if renderer and messages:
-            prompt_text = renderer.build_generation_prompt(messages)
+            with contextlib.suppress(Exception):
+                renderer.attach_processor(
+                    self._vision_processor,
+                    max_pixels=self._vision_max_pixels,
+                )
+            processor_payload = renderer.build_processor_inputs(
+                messages,
+                attachments=attachments,
+            ) or {}
+            prompt_text = renderer.build_generation_prompt(
+                messages,
+                attachments=attachments,
+            )
             self._stop_sequences = renderer.get_stop_sequences()
             start = time.perf_counter()
             encoded = self._tokenizer.encode(prompt_text)
             tokenizer_time = time.perf_counter() - start
-            return torch.tensor(encoded, dtype=torch.long), tokenizer_time
+            return torch.tensor(encoded, dtype=torch.long), tokenizer_time, processor_payload
         if not model_input.token_chunks:
             raise ValueError("ModelInput must contain at least one token chunk")
         self._stop_sequences = []
         tensor = model_input.token_chunks[0]
-        return tensor, 0.0
+        return tensor, 0.0, processor_payload
 
     def _parse_response(self, model_input: ModelInput, text: str) -> str | None:
         renderer = model_input.metadata.get("renderer") if model_input.metadata else None
@@ -877,6 +902,38 @@ class SamplerActor:
         token_id = token_candidates[sampled_index].item()
         logprob = torch.log(probs[sampled_index] + 1e-12).item()
         return token_id, logprob
+
+    def _initialise_vision_processor(self, spec: str | Any | None) -> Any | None:
+        if spec is None:
+            return None
+        if not isinstance(spec, str):
+            return spec
+        if importlib.util.find_spec("transformers") is None:
+            raise RuntimeError(
+                "transformers must be installed to load a vision processor"
+            )
+        from transformers import AutoProcessor  # type: ignore
+
+        return AutoProcessor.from_pretrained(spec, trust_remote_code=True)
+
+    def _to_serialisable_processor_inputs(
+        self, payload: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        if not payload:
+            return {}
+        serialisable: Dict[str, Any] = {}
+        for key, value in payload.items():
+            if torch.is_tensor(value):
+                serialisable[key] = value.detach().cpu()
+            elif isinstance(value, Mapping):
+                serialisable[key] = self._to_serialisable_processor_inputs(value)
+            elif isinstance(value, list):
+                serialisable[key] = [
+                    v.detach().cpu() if torch.is_tensor(v) else v for v in value
+                ]
+            else:
+                serialisable[key] = value
+        return serialisable
 
 
 @ray.remote
