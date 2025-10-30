@@ -125,4 +125,94 @@ def ppo(
     }
 
 
-__all__ = ["cross_entropy", "importance_sampling", "ppo"]
+def generalized_jsd(
+    logits: torch.Tensor,
+    *,
+    teacher_logits: torch.Tensor,
+    loss_mask: torch.Tensor | None = None,
+    beta: float = 0.5,
+    temperature: float = 1.0,
+    reduction: str = "sum",
+) -> Dict[str, torch.Tensor]:
+    """Generalised Jensen-Shannon divergence between student and teacher logits.
+
+    Args:
+        logits: Student logits of shape ``(batch, seq_len, vocab)``.
+        teacher_logits: Teacher logits of the same shape as ``logits``.
+        loss_mask: Optional boolean mask selecting the token positions that
+            contribute to the loss. Shape ``(batch, seq_len)``.
+        beta: Interpolation coefficient between student and teacher
+            distributions. Values of ``0`` or ``1`` reduce to KL divergences
+            against the teacher or student respectively.
+        temperature: Softmax temperature applied to both distributions.
+        reduction: Specifies the reduction to apply. Supported values:
+            ``"sum"`` (default), ``"mean"``, ``"batchmean"``.
+
+    Returns:
+        Dictionary containing the scalar loss along with detached
+        student/teacher log-probabilities for diagnostics.
+    """
+
+    if logits.shape != teacher_logits.shape:
+        raise ValueError("teacher_logits must match logits shape")
+
+    student_logits = logits / temperature
+    teacher_logits = teacher_logits.to(logits.dtype) / temperature
+
+    student_log_probs = F.log_softmax(student_logits, dim=-1)
+    teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
+
+    if beta <= 0.0:
+        jsd = F.kl_div(student_log_probs, teacher_log_probs, reduction="none", log_target=True)
+    elif beta >= 1.0:
+        jsd = F.kl_div(teacher_log_probs, student_log_probs, reduction="none", log_target=True)
+    else:
+        beta_tensor = torch.tensor(beta, dtype=student_log_probs.dtype, device=student_log_probs.device)
+        log_beta = torch.log(beta_tensor)
+        log_one_minus_beta = torch.log1p(-beta_tensor)
+        mixture_log_probs = torch.logsumexp(
+            torch.stack(
+                (
+                    student_log_probs + log_one_minus_beta,
+                    teacher_log_probs + log_beta,
+                )
+            ),
+            dim=0,
+        )
+        kl_teacher = F.kl_div(mixture_log_probs, teacher_log_probs, reduction="none", log_target=True)
+        kl_student = F.kl_div(mixture_log_probs, student_log_probs, reduction="none", log_target=True)
+        jsd = beta_tensor * kl_teacher + (1 - beta_tensor) * kl_student
+
+    mask = None
+    if loss_mask is not None:
+        if loss_mask.shape != student_log_probs.shape[:2]:
+            raise ValueError("loss_mask must have shape (batch, seq_len)")
+        mask = loss_mask.to(dtype=torch.bool, device=jsd.device)
+        jsd = jsd[mask]
+
+    if jsd.numel() == 0:
+        loss = torch.tensor(0.0, dtype=student_log_probs.dtype, device=student_log_probs.device)
+    else:
+        if reduction == "sum":
+            loss = jsd.sum()
+        elif reduction == "mean":
+            loss = jsd.mean()
+        elif reduction == "batchmean":
+            if mask is not None:
+                denom = mask.sum().clamp(min=1).to(jsd.dtype)
+            else:
+                denom = torch.tensor(jsd.numel() / jsd.shape[-1], dtype=jsd.dtype, device=jsd.device)
+                denom = denom.clamp(min=1)
+            loss = jsd.sum() / denom
+        else:
+            raise ValueError(f"Unsupported reduction '{reduction}'")
+
+    return {
+        "loss": loss,
+        "student_log_probs": student_log_probs.detach(),
+        "teacher_log_probs": teacher_log_probs.detach(),
+        "loss_mask": loss_mask.detach() if loss_mask is not None else None,
+    }
+
+
+__all__ = ["cross_entropy", "importance_sampling", "ppo", "generalized_jsd"]

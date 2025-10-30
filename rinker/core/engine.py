@@ -20,6 +20,7 @@ LOSS_REGISTRY: Dict[str, Callable[..., Dict[str, torch.Tensor]]] = {
     "cross_entropy": losses.cross_entropy,
     "importance_sampling": losses.importance_sampling,
     "ppo": losses.ppo,
+    "generalized_jsd": losses.generalized_jsd,
 }
 
 
