@@ -1,0 +1,13 @@
+# Example Ray runtime config for fine-tuning the Qwen3.5 MoE model.
+# Requires enough memory to host a 35B A3B model on the learner and samplers.
+num_sampler_actors: 2
+learner_num_gpus: 4
+learner_num_cpus: 8
+learner_mode: fsdp
+learner_backend: nccl
+sampler_num_gpus: 1
+sampler_num_cpus: 2
+base_model: qwen3.5-35b-a3b
+use_placement_group: true
+placement_strategy: STRICT_PACK
+amp_dtype: bfloat16
