@@ -41,7 +41,11 @@ sampler throughput, tokenizer TPS, and GPU utilisation to TensorBoard and W&B.
 ## Model zoo
 
 `ServiceClient` now proxies a lightweight model registry. Request base models via
-string aliases such as `"qwen3-0.5b"`, `"qwen3-moe-a14b"`, or
-`"llama3-8b"`. Tokenisers are loaded lazily on the driver and shipped to Ray
-actors. Hugging Face dependencies remain optional and will raise a friendly
-error if missing.
+string aliases such as `"qwen3-0.5b"`, `"qwen3.5-0.8b"` (dense),
+`"qwen3-moe-a14b"`, `"qwen3.5-35b-a3b"` (MoE), or `"llama3-8b"`.
+Tokenisers are loaded lazily on the driver and shipped to Ray actors.
+Hugging Face dependencies remain optional and will raise a friendly error
+if missing.
+
+For large MoE runs, start from `configs/ray/qwen35_35b_a3b.yaml` and tune
+`learner_num_gpus`/`num_sampler_actors` to match your cluster.
